@@ -1,17 +1,10 @@
+#!/usr/bin/env node
 const puppeteer = require("puppeteer");
-// require('dayjs/locale/pt-br')
 const csv = require("csvtojson");
 const fs = require("fs");
-
 const dayjs = require("dayjs");
-
-// dayjs.locale('pt-br');
-const payload = {
-  startDate: "20/01/2024",
-  endDate: "21/03/2024",
-  accessEmail: "edmonteironet@gmail.com",
-};
-
+const { program } = require('commander');
+const verifyQuantityRegister = require('./verifyQuantityRegister');
 
 const extractPaylaod = (payload) => {
   return {
@@ -21,165 +14,154 @@ const extractPaylaod = (payload) => {
   };
 };
 
-(async () => {
-  
-  const diffDays = await handleDifBetweenDates(payload);
-  console.log('Intervalo total de dias: ',diffDays)
-  for (let i = 0; i < diffDays; i++) {
-    const browser = await puppeteer.launch({
-      headless: true,
-      defaultViewport: null,
-    });
-    const page = await browser.newPage();
-    const formatedDateStarter = payload.startDate.split('/').reverse().join('-');
+// Variáveis globais do código:
 
-    const currentDay = dayjs(formatedDateStarter).add(i, "days").format("DD/MM/YYYY");
-    await automationFlux(page, {startDate: currentDay, endDate: currentDay, accessEmail: payload.accessEmail})
-    await browser.close();
-    // await new Promise((resolve) => setTimeout(resolve, 2000));
+let originalPayload;
+let fileSerial = 1;
+
+// -----------------------------
+
+async function init (payload, originalPayloadParam) {
+
+  const { page, client } = await handleLoginOnSystem(payload);
+
+  await handleNavigateToSearchSection(page);
+
+  await handleInputDates(page, payload);
+
+  const { totalOfRecords } = await handleWithResultsFound(page);
+
+  console.log('Total de registros encontrados: ',totalOfRecords);
+
+  if(totalOfRecords > 450){
+    console.log('Mais de 450 registros encontrados, sugerimos diminuir o tamanho do seu intervalo de datas. Pois o sistema não suporta mais do que 450 registros por vez.');
+    return
+  }else{
+    await handleDownloadCsv(page);
+    await handleDownloadPdf(page);
+    await handleNameFiles(await verifyTempDirHasFiles(), originalPayloadParam);
   }
-  
+  page.close();
 
-})();
+
+
+}
 
 async function handleWithResultsFound(page) {
-  try {
-    await page.waitForSelector("#formItensBPS\\:tabelaBPS\\:j_id375",{timeout: 10000})
-    const totalOfResults = await page.$eval(
-      "#formItensBPS\\:tabelaBPS\\:j_id375",
-      (element) => {
-        console.log(element.innerText);
-        if(element.innerText.includes('Nenhum registro encontrado')){
-          return [0,0,0]
-        }
-        let pagination = element.innerText;
+  return await verifyIfHasResults(page, async ()=>{
+    try {
+      await page.waitForSelector("#formItensBPS\\:tabelaBPS\\:j_id375")
+      const totalOfResults = await page.$eval(
+        "#formItensBPS\\:tabelaBPS\\:j_id375",
+        (element) => {
+          if(element.innerText.includes('Nenhum registro encontrado')){
+            return [0,0,0]
+          }
+          let pagination = element.innerText;
+    
+          const regex = /(\d+(\.\d+)?)/g;
+    
+          const arrayOfNumbers = pagination.match(regex);
+    
+          const total = parseInt(arrayOfNumbers[arrayOfNumbers.length - 1]);
+    
+          return arrayOfNumbers.map((number) => parseInt(number));
+        },
+      );
+      const [ currentPage, totalOfPages, totalOfRecords ] = totalOfResults;
   
-        const regex = /(\d+(\.\d+)?)/g;
-  
-        const arrayOfNumbers = pagination.match(regex);
-  
-        const total = parseInt(arrayOfNumbers[arrayOfNumbers.length - 1]);
-  
-        return arrayOfNumbers.map((number) => parseInt(number));
-      },
-    );
-    const [ currentPage, totalOfPages, totalOfRecords ] = totalOfResults;
+      return {
+        currentPage, 
+        totalOfPages, 
+        totalOfRecords 
+      };
+      
+    } catch (error) {
+      console.log('Erro ao buscar resultados, tentando novamente...')
+      return await handleWithResultsFound(page);
+    }
+  })
+}
 
-    return {
-      currentPage, 
-      totalOfPages, 
-      totalOfRecords 
-    };
-    
-  } catch (error) {
-    
+async function  verifyIfHasResults (page, callback) {
+  try {
+    await page.waitForSelector("#formItensBPS\\:tabelaBPS\\:j_id377");
     return {
       currentPage:0, 
       totalOfPages:0, 
       totalOfRecords:0 
     };
-    
-  }
-  
-
-  
-}
-
-async function handleWithMoreThanThousandRecords ({}) {
-
-}
-
-async function handleWithNameFiles () {
-  const files = fs.readdirSync('./temp/') 
-  console.log(files)
-  return files;
-  // fs.renameSync("./temp/relatorio.csv", "./temp/relatorio.csv");
-}
-
-async function automationFlux (page, payload) {
-  try {
-
-    await page.goto(
-      "https://bps.saude.gov.br/visao/consultaPublica/relatorios/geral/index.jsf",
-    );
-  
-    const client = await page.target().createCDPSession();
-  
-    await client.send("Page.setDownloadBehavior", {
-      behavior: "allow",
-      downloadPath: "./temp",
-    });
-  
-    const accessEmail = extractPaylaod(payload).accessEmail;
-    const emailInput = await page.$$eval("#formLogin", (el) => {
-      return el[0];
-    });
-  
-    await page.type("#formLogin\\:txtEmail1", accessEmail);
-    await page.click("#formLogin\\:btnAcessarConsultaPublica");
-  
-    await page.waitForSelector(
-      "#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a",
-    );
-  
-    const buttonSection = await page.$eval(
-      "#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a",
-      (elemento) => {
-        elemento.click();
-      },
-    );
-  
-    const currentSelector = await page.waitForSelector(
-      "#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a",
-    );
-  
-    await page.click("#barraMenu > ul:nth-child(1) > li");
-  
-    await page.waitForSelector("#formItensBPS\\:qualificacaox");
-  
-    await page.$eval("#formItensBPS\\:qualificacaox", (element) => {
-      console.log(element);
-      if(element.checked){
-        element.click();
-
-      }
-    });
-  
-    await page.waitForSelector("#formItensBPS\\:checkPeriodo");
-  
-    await page.$eval("#formItensBPS\\:checkPeriodo", (element) => {
-      element.click();
-    });
-  
-  
-    await page.waitForSelector("#formItensBPS\\:j_id201"); //Espera o painel que possui os inputs de datas;
-  
-    await handleInputDates(page, payload);
-    console.log("Aguarde buscando dados referente ao dia: ", payload.startDate);
-    await page.waitForNetworkIdle(); // Espera até que a requisição da pesquisa seja concluída
-  
-    // await page.waitForSelector("#formItensBPS\\:tabelaBPS\\:j_id375", {timeout: 1000000});
-  
-    const { totalOfRecords } = await handleWithResultsFound(page);
-    console.log(`Busca concluída com sucesso! Total de dados encontrados: ${totalOfRecords}`)
-
-    if(totalOfRecords === 0){
-      // throw new Error('Nenhum registro encontrado');
-      return await page.close();
-    }
-  
-    if(totalOfRecords < 1000){
-      await handleDownloadCsv(client, page);
-      await handleDownloadPdf(client, page);
-      await handleNameFiles(await handleWithNameFiles());
-    }else{
-  
-    }
   } catch (error) {
-    console.error(error);
-    await page.screenshot()
+    return callback();
   }
-  
+}
+
+async function verifyTempDirHasFiles () {
+  const files = fs.readdirSync('./temp/') 
+  return files;
+}
+
+async function handleLoginOnSystem (payload) {
+  const browser = await puppeteer.launch({
+    headless: true,
+    defaultViewport: null,
+  });
+
+  const page = await browser.newPage();
+
+  await page.goto(
+    "https://bps.saude.gov.br/visao/consultaPublica/relatorios/geral/index.jsf",
+  );
+
+  const client = await page.target().createCDPSession();
+
+  await client.send("Page.setDownloadBehavior", {
+    behavior: "allow",
+    downloadPath: "./temp",
+  });
+
+  const accessEmail = extractPaylaod(payload).accessEmail;
+  const emailInput = await page.$$eval("#formLogin", (el) => {
+    return el[0];
+  });
+  console.log("Email que está tentando ser inserido: ", accessEmail)
+  await page.type("#formLogin\\:txtEmail1", accessEmail);
+  await page.click("#formLogin\\:btnAcessarConsultaPublica");
+
+  await page.waitForSelector(
+    "#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a",
+  );
+
+  return {page, client}
+}
+
+async function handleNavigateToSearchSection (page) {
+  await page.waitForSelector("#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a");
+
+  await page.$eval("#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a", (elemento) => {
+      elemento.click();
+    },
+  );
+
+  await page.waitForSelector("#barraMenu > ul:nth-child(1) > li > ul > li:nth-child(1) > a");
+
+  await page.click("#barraMenu > ul:nth-child(1) > li");
+
+  await page.waitForSelector("#formItensBPS\\:qualificacaox");
+
+  await page.$eval("#formItensBPS\\:qualificacaox", (element) => {
+    console.log(element);
+    if(element.checked){
+      element.click();
+
+    }
+  });
+
+  await page.waitForSelector("#formItensBPS\\:checkPeriodo");
+
+  await page.$eval("#formItensBPS\\:checkPeriodo", (element) => {
+    element.click();
+  });
 }
 
 async function handleInputDates (page, payload) {
@@ -202,23 +184,12 @@ async function handleInputDates (page, payload) {
 
   const endDateInput = await page.$eval("#formItensBPS\\:cldDataIFInputDate", (element) => element.value);
 
-  // console.log({
-  //   startDateInput,
-  //   endDateInput,
-    
-  // })
-
   if(startDateInput !== payload.startDate || endDateInput !== payload.endDate){
-    // console.log('Ocorreu um erro no preenchimento no input de data')
-    // if(attempt < 3) {
-    //   attempt++;
-     
-    // }else{
-    //   throw new Error('Ocorreu um erro ao preencher as datas');
-    // }
     await handleInputDates(page, payload);
     return;
   }else{
+
+    console.log("Buscando dados referente ao período de: ", payload.startDate, payload.endDate);
     await page.waitForSelector("#conteudo > div:nth-child(2) > input"); // Garante que o botão pesquisar esteja na tela
     await page.click("#conteudo > div:nth-child(2) > input"); // Clica no botão pesquisar
   }
@@ -228,45 +199,46 @@ async function handleInputDates (page, payload) {
   
 }
 
-async function handleDownloadCsv(client, page) {
-  console.log("Entrou na função para fazer download do csv")
+async function handleDownloadCsv(page) {
   await page.waitForSelector("#formItensBPS\\:j_id219 > fieldset > div:nth-child(3) > input");
   await page.click("#formItensBPS\\:j_id219 > fieldset > div:nth-child(3) > input");
-  await page.waitForNetworkIdle({timeout: 1000000});
+  console.log("Fazendo download do csv, aguarde...");
+  await page.waitForNetworkIdle({timeout: 0});
+  const downloadedFiles = await verifyTempDirHasFiles();
+  if(downloadedFiles.length < 1){
+    console.log("Ocorreu um erro inesperado ao tentar fazer download do arquivo csv, tente novamente mais tarde.")
+  }
+  return
 }
 
-async function handleDownloadPdf (client, page) {
-  console.log("Entrou na função para fazer download do pdf")
-  await page.waitForSelector("#formItensBPS\\:j_id219 > fieldset > div:nth-child(4) > input")
-  await page.click("#formItensBPS\\:j_id219 > fieldset > div:nth-child(4) > input")
-  await page.waitForNetworkIdle({timeout: 1000000});
+async function handleDownloadPdf (page) {
+  await page.waitForSelector("#formItensBPS\\:j_id219 > fieldset > div:nth-child(4) > input");
+  await page.click("#formItensBPS\\:j_id219 > fieldset > div:nth-child(4) > input");
+  console.log("Fazendo download do pdf, aguarde...");
+  await page.waitForNetworkIdle({timeout: 0});
+  const downloadedFiles = await verifyTempDirHasFiles();
+  if(downloadedFiles.length < 2){
+    console.log("Ocorreu um erro inesperado ao tentar fazer download do arquivo pdf, tente novamente mais tarde.")
+  }
 }
 
-async function handleDifBetweenDates(payload) {
-  const { startDate, endDate } = payload;
+async function handleNameFiles (fileNames, payload) {
 
-  const [startDay, startMonth, startYear] = startDate.split('/');
-  const [endDay, endMonth, endYear] = endDate.split('/');
+  //Lidar com nome dos arquivos quando for apenas uma busca.
 
-  const formattedStartDate = `${startYear}-${startMonth}-${startDay}`;
-  const formattedEndDate = `${endYear}-${endMonth}-${endDay}`;
-
-  const start = dayjs(formattedStartDate);
-  const end = dayjs(formattedEndDate);
-
-  const diff = end.diff(start, "days")
-
-  return parseFloat(diff);
-}
-
-async function handleNameFiles (fileNames) {
   const destinationDir = `./${payload.startDate.replace(/\//g, '-')}_${payload.endDate.replace(/\//g, '-')}`;
-  fs.mkdirSync(destinationDir);
+  if(!fs.existsSync(destinationDir)){
+    fs.mkdirSync(destinationDir);
+  }
 
   for (let index = 0; index < fileNames.length; index++) {
-    const fileName = fileNames[index];
-    fs.rename(`./temp/${fileName}`, `./${destinationDir}/${fileName}`, (err) => {
-      if (err) throw err;
+    const [fileName, extension] = fileNames[index].split('.');
+    console.log(fileName, extension)
+    // Nessa linha irei colocar os nomes dos arquivos como subintervalos
+    fs.rename(`./temp/${fileName}.${extension}`, `${destinationDir}/${fileName}_${fileSerial}.${extension}`, (err) => {
+      if (err){
+        console.log(`Ocorreu um erro ao tentar salvar o arquivo ${fileName}_${fileSerial}.${extension} - ${payload.startDate.replace(/\//g, '-')}_${payload.endDate.replace(/\//g, '-')}`)
+      }
       console.log('Rename complete!');
     });
   }
@@ -276,7 +248,38 @@ async function handleNameFiles (fileNames) {
       console.error(err);
       return;
     }
+    fileSerial++;
     console.log('temp is deleted!');
+    return;
   }
   );
 }
+
+// A partir daqui é apenas a configuração da CLI
+
+
+program
+  .command('play')
+  .argument('<param1>', 'Data de início')
+  .argument('<param2>', 'Data de final')
+  .argument('<param3>', 'Email de acesso')
+  .description('Fazer busca no intervalo de datas')
+  .action(async (param1, param2, param3) => {
+    console.log('Data inicial: ', param1);
+    console.log('Data final: ', param2);
+    console.log('Email utilizado: ', param3);
+    originalPayload = {startDate: param1, endDate: param2, accessEmail: param3};
+
+    const payloads = await verifyQuantityRegister([originalPayload], 300, originalPayload);
+    // const teste = [1,2,3,4,5];
+    // for(let i = 0; i < teste.length; i++){
+    //   return console.log(teste[i]);
+      
+    // }
+    for (let i=0; i< payloads.length; i++){
+      await init(payloads[i], originalPayload);
+    }
+    process.exit();
+  });
+
+  program.parse();
